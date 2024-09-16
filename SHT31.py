@@ -1,55 +1,52 @@
 import time
 import board
 import busio
+from adafruit_bus_device.i2c_device import I2CDevice
 
 class SHT31:
-    def __init__(self, i2c_bus=None, address=0x44):
-        if i2c_bus is None:
-            i2c_bus = busio.I2C(board.SCL, board.SDA)
-        self.i2c_bus = i2c_bus
-        self.address = address
+    def __init__(self, i2c, address=0x44):
+        self.i2c_device = I2CDevice(i2c, address)
+        self.buffer = bytearray(6)  # 6 byte buffer for SHT31 data
 
-    def reset(self):
-        """Mengirim perintah reset ke sensor"""
-        self._send_command(0x30A2)
-    
+    def _send_command(self, command):
+        """Mengirim command 2 byte ke sensor."""
+        with self.i2c_device as i2c:
+            i2c.write(bytes([command >> 8, command & 0xFF]))
+
+    def _read_data(self):
+        """Membaca 6 byte data dari sensor."""
+        with self.i2c_device as i2c:
+            i2c.readinto(self.buffer)
+        return self.buffer
+
+    def _calculate_temperature(self, temp_data):
+        """Menghitung suhu dari 2 byte pertama."""
+        raw_temperature = (temp_data[0] << 8) | temp_data[1]
+        temperature = -45 + (175 * (raw_temperature / 65535.0))
+        return temperature
+
+    def _calculate_humidity(self, humidity_data):
+        """Menghitung kelembapan dari 2 byte ketiga."""
+        raw_humidity = (humidity_data[3] << 8) | humidity_data[4]
+        humidity = 100 * (raw_humidity / 65535.0)
+        return humidity
+
     def read_temperature_humidity(self):
-        """Membaca suhu dan kelembapan dari sensor"""
-        data = self._send_command(0x2C06, read_length=6)
-        
-        if data is None:
-            return None, None
-        
-        temp_raw = (data[0] << 8) | data[1]
-        humidity_raw = (data[3] << 8) | data[4]
+        """Membaca dan mengembalikan suhu dan kelembapan."""
+        self._send_command(0x2400)  # Perintah untuk pembacaan suhu dan kelembapan
+        time.sleep(0.015)  # Tunggu 15ms untuk pengukuran
+        data = self._read_data()
 
-        if not self._check_crc(data[:2], data[2]) or not self._check_crc(data[3:5], data[5]):
-            return None, None
+        # Periksa checksum
+        if not self._check_crc(data[0:2], data[2]) or not self._check_crc(data[3:5], data[5]):
+            raise RuntimeError("CRC check failed")
 
-        temperature = -45 + (175 * (temp_raw / 65535.0))
-        humidity = 100 * (humidity_raw / 65535.0)
-        
+        temperature = self._calculate_temperature(data)
+        humidity = self._calculate_humidity(data)
         return temperature, humidity
 
-    def _send_command(self, command, read_length=0):
-        """Mengirim perintah I2C ke sensor dan membaca data jika perlu"""
-        try:
-            self.i2c_bus.writeto(self.address, bytearray([(command >> 8) & 0xFF, command & 0xFF]))
-            if read_length > 0:
-                result = bytearray(read_length)
-                self.i2c_bus.readfrom_into(self.address, result)
-                return result
-        except Exception as e:
-            print(f"Error: {e}")
-            return None
-    
     def _check_crc(self, data, checksum):
-        """Menghitung CRC8 dan membandingkannya dengan checksum yang diterima"""
-        crc = self._crc8(data)
-        return crc == checksum
-    
-    def _crc8(self, data):
-        """Menghitung CRC8 menggunakan algoritma polynomial 0x31"""
+        """Fungsi untuk memeriksa CRC8."""
         crc = 0xFF
         for byte in data:
             crc ^= byte
@@ -58,4 +55,17 @@ class SHT31:
                     crc = (crc << 1) ^ 0x31
                 else:
                     crc <<= 1
-        return crc & 0xFF
+        crc &= 0xFF
+        return crc == checksum
+
+# Contoh penggunaan
+i2c = busio.I2C(board.SCL, board.SDA)
+sensor = SHT31(i2c)
+
+while True:
+    try:
+        temperature, humidity = sensor.read_temperature_humidity()
+        print(f"Temperature: {temperature:.2f} °C, Humidity: {humidity:.2f} %")
+    except RuntimeError as e:
+        print(f"Error reading from sensor: {e}")
+    time.sleep(2)
