@@ -1,43 +1,102 @@
 import serial
 import time
 
-# Inisialisasi UART dengan PySerial
-uart = serial.Serial(port="/dev/serial0", baudrate=9600, timeout=1)
+class DFRobot_A02_Distance:
 
-def read_data():
-    """
-    Membaca dan mencetak semua data dari sensor termasuk header dan jarak
-    """
-    while True:
-        if uart.in_waiting >= 4:  # Pastikan ada setidaknya 4 byte data yang tersedia
-            # Menunggu sampai byte pertama (header) adalah 0xFF (255)
-            header = ord(uart.read(1))
-            if header == 0xFF:
-                # Membaca byte lainnya
-                dataPayloadMsb = ord(uart.read(1))  # Byte kedua (MSB)
-                dataPayloadLsb = ord(uart.read(1))  # Byte ketiga (LSB)
-                dataCrc = ord(uart.read(1))         # Byte keempat (Checksum)
+  ## Board status 
+  STA_OK = 0x00
+  STA_ERR_CHECKSUM = 0x01
+  STA_ERR_SERIAL = 0x02
+  STA_ERR_CHECK_OUT_LIMIT = 0x03
+  STA_ERR_CHECK_LOW_LIMIT = 0x04
+  STA_ERR_DATA = 0x05
 
-                # Hitung checksum
-                checkSum = (0xFF + dataPayloadMsb + dataPayloadLsb) & 0xFF
+  ## last operate status, users can use this variable to determine the result of a function call. 
+  last_operate_status = STA_OK
 
-                # Menggabungkan MSB dan LSB menjadi satu nilai 16-bit untuk jarak
-                result = (dataPayloadMsb << 8) | dataPayloadLsb
+  ## variable 
+  distance = 0
 
-                # Cetak semua data
-                print(f"Header: {header}")
-                print(f"MSB: {dataPayloadMsb}")
-                print(f"LSB: {dataPayloadLsb}")
-                print(f"CRC: {dataCrc}")
+  ## Maximum range
+  distance_max = 4500
+  distance_min = 0
+  range_max = 4500
 
-                # Validasi checksum dan cetak jarak jika valid
-                if checkSum == dataCrc:
-                    print(f"Jarak: {result} cm")
-                else:
-                    print("Checksum tidak valid")
+  def __init__(self):
+    '''
+      @brief    Sensor initialization.
+    '''
+    self._ser = serial.Serial("/dev/ttyAMA0", 9600)
+    if self._ser.isOpen() != True:
+      self.last_operate_status = self.STA_ERR_SERIAL
 
-                print("-" * 30)  # Pembatas antar pembacaan
+  def set_dis_range(self, min, max):
+    self.distance_max = max
+    self.distance_min = min
 
-if __name__ == "__main__":
-    read_data()
-    time.sleep(0.1)
+  def getDistance(self):
+    '''
+      @brief    Get measured distance
+      @return    measured distance
+    '''
+    self._measure()
+    return self.distance
+  
+  def _check_sum(self, l):
+    return (l[0] + l[1] + l[2])&0x00ff
+
+  def _measure(self):
+    data = [0]*4
+    i = 0
+    timenow = time.time()
+
+    while (self._ser.inWaiting() < 4):
+      time.sleep(0.01)
+      if ((time.time() - timenow) > 1):
+        break
+    
+    rlt = self._ser.read(self._ser.inWaiting())
+    #print(rlt)
+    
+    index = len(rlt)
+    if(len(rlt) >= 4):
+       index = len(rlt) - 4
+       while True:
+         try:
+           data[0] = ord(rlt[index])
+         except:
+           data[0] = rlt[index]
+         if(data[0] == 0xFF):
+           break
+         elif (index > 0):
+           index = index - 1
+         else:
+           break
+       #print(data)
+       if (data[0] == 0xFF):
+         try:
+           data[1] = ord(rlt[index + 1])
+           data[2] = ord(rlt[index + 2])
+           data[3] = ord(rlt[index + 3])
+         except:
+           data[1] = rlt[index + 1]
+           data[2] = rlt[index + 2]
+           data[3] = rlt[index + 3]
+         i = 4
+    #print(data)
+    if i == 4:
+      sum = self._check_sum(data)
+      if sum != data[3]:
+        self.last_operate_status = self.STA_ERR_CHECKSUM
+      else:
+        self.distance = data[1]*256 + data[2]
+        self.last_operate_status = self.STA_OK
+      if self.distance > self.distance_max:
+        self.last_operate_status = self.STA_ERR_CHECK_OUT_LIMIT
+        self.distance = self.distance_max
+      elif self.distance < self.distance_min:
+        self.last_operate_status = self.STA_ERR_CHECK_LOW_LIMIT
+        self.distance = self.distance_min
+    else:
+      self.last_operate_status = self.STA_ERR_DATA
+    return self.distance
