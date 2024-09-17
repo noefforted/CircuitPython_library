@@ -1,71 +1,85 @@
 import time
 import board
 import busio
-from adafruit_bus_device.i2c_device import I2CDevice
 
 class SHT31:
-    def __init__(self, i2c, address=0x44):
-        self.i2c_device = I2CDevice(i2c, address)
-        self.buffer = bytearray(6)  # 6 byte buffer for SHT31 data
+    def __init__(self, i2c_address=0x44):
+        """
+        Inisialisasi sensor SHT31 menggunakan CircuitPython.
+        """
+        i2c = busio.I2C(board.SCL, board.SDA)  # Menggunakan SCL dan SDA bawaan
+        self.i2c_device = i2c
+        self.address = i2c_address
+        self.command_measure = [0x2C, 0x06]  # Perintah untuk memulai pengukuran
 
-    def _send_command(self, command):
-        """Mengirim command 2 byte ke sensor."""
-        with self.i2c_device as i2c:
-            i2c.write(bytes([command >> 8, command & 0xFF]))
+    def send_command(self, command):
+        """
+        Mengirimkan perintah melalui I2C ke sensor SHT31.
+        """
+        self.i2c_device.writeto(self.address, bytes(command))
 
-    def _read_data(self):
-        """Membaca 6 byte data dari sensor."""
-        with self.i2c_device as i2c:
-            i2c.readinto(self.buffer)
-        return self.buffer
-
-    def _calculate_temperature(self, temp_data):
-        """Menghitung suhu dari 2 byte pertama."""
-        raw_temperature = (temp_data[0] << 8) | temp_data[1]
-        temperature = -45 + (175 * (raw_temperature / 65535.0))
-        return temperature
-
-    def _calculate_humidity(self, humidity_data):
-        """Menghitung kelembapan dari 2 byte ketiga."""
-        raw_humidity = (humidity_data[3] << 8) | humidity_data[4]
-        humidity = 100 * (raw_humidity / 65535.0)
-        return humidity
-
-    def read_temperature_humidity(self):
-        """Membaca dan mengembalikan suhu dan kelembapan."""
-        self._send_command(0x2400)  # Perintah untuk pembacaan suhu dan kelembapan
-        time.sleep(0.015)  # Tunggu 15ms untuk pengukuran
-        data = self._read_data()
-
-        # Periksa checksum
-        if not self._check_crc(data[0:2], data[2]) or not self._check_crc(data[3:5], data[5]):
-            raise RuntimeError("CRC check failed")
-
-        temperature = self._calculate_temperature(data)
-        humidity = self._calculate_humidity(data)
-        return temperature, humidity
-
-    def _check_crc(self, data, checksum):
-        """Fungsi untuk memeriksa CRC8."""
+    def crc8(self, data):
+        """
+        Menghitung CRC-8 menggunakan polinomial 0x31 (CRC-8-CCITT).
+        """
+        polynomial = 0x31
         crc = 0xFF
         for byte in data:
             crc ^= byte
             for _ in range(8):
                 if crc & 0x80:
-                    crc = (crc << 1) ^ 0x31
+                    crc = (crc << 1) ^ polynomial
                 else:
                     crc <<= 1
-        crc &= 0xFF
-        return crc == checksum
+                crc &= 0xFF  # Menjaga CRC tetap di 8 bit
+        return crc
 
-# Contoh penggunaan
-i2c = busio.I2C(board.SCL, board.SDA)
-sensor = SHT31(i2c)
+    def read_data(self):
+        """
+        Membaca data dari sensor setelah perintah pengukuran dikirim.
+        Mengembalikan nilai suhu dan kelembaban yang dibaca dari sensor.
+        """
+        try:
+            # Kirim perintah untuk memulai pengukuran
+            self.send_command(self.command_measure)
+            time.sleep(0.015)  # Tunggu pengukuran selesai (15ms)
 
-while True:
-    try:
-        temperature, humidity = sensor.read_temperature_humidity()
-        print(f"Temperature: {temperature:.2f} °C, Humidity: {humidity:.2f} %")
-    except RuntimeError as e:
-        print(f"Error reading from sensor: {e}")
-    time.sleep(2)
+            # Baca 6 byte dari sensor (suhu + checksum, kelembaban + checksum)
+            result = bytearray(6)
+            self.i2c_device.readfrom_into(self.address, result)
+
+            # Memisahkan data suhu dan kelembaban beserta CRC-nya
+            temperature_raw = result[0] << 8 | result[1]
+            temperature_crc = result[2]
+            humidity_raw = result[3] << 8 | result[4]
+            humidity_crc = result[5]
+
+            # Validasi checksum untuk suhu
+            if self.crc8(result[:2]) != temperature_crc:
+                print("CRC error pada suhu")
+                return None, None
+
+            # Validasi checksum untuk kelembaban
+            if self.crc8(result[3:5]) != humidity_crc:
+                print("CRC error pada kelembaban")
+                return None, None
+
+            # Konversi nilai suhu dan kelembaban dari data mentah
+            temperature = -45 + (175 * temperature_raw / 65535.0)
+            humidity = 100 * humidity_raw / 65535.0
+
+            return temperature, humidity  # Mengembalikan nilai suhu dan kelembaban
+
+        except Exception as e:
+            print(f"Error reading SHT31 sensor: {e}")
+            return None, None
+
+    def get_temperature_humidity(self):
+        """
+        Fungsi untuk terus-menerus membaca data suhu dan kelembaban dari sensor hingga mendapatkan nilai yang valid.
+        """
+        while True:
+            temperature, humidity = self.read_data()
+            if temperature is not None and humidity is not None:
+                return temperature, humidity  # Mengembalikan nilai suhu dan kelembaban yang valid
+            time.sleep(0.1)  # Delay untuk stabilisasi jika tidak ada data

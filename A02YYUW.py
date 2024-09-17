@@ -50,23 +50,18 @@ class A02YYUW:
                     distance = (msb << 8) | lsb
                     return distance
                 else:
-                    print("Checksum tidak valid")
                     return None
             else:
-                print(f"Header tidak valid: {header}, membuang data...")
                 return None
         else:
-            print("Menunggu data...")
             return None
 
     def get_distance(self):
+        """
+        Fungsi untuk terus-menerus membaca jarak dari sensor hingga mendapatkan data valid.
+        """
         while True:
             distance = self.read_data()
             if distance is not None:
-                print(f"Jarak: {distance} mm")
-            time.sleep(0.1)
-
-# Contoh Penggunaan
-if __name__ == "__main__":
-    sensor = A02YYUW(port="/dev/serial0", baudrate=9600)
-    sensor.get_distance()
+                return distance  # Mengembalikan jarak yang valid
+            time.sleep(0.1)  # Delay untuk stabilisasi jika tidak ada data
